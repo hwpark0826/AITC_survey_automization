@@ -83,6 +83,17 @@ def make_context(browser, config: AgentConfig) -> BrowserContext:
     )
 
 
+def launch_browser(playwright, config: AgentConfig):
+    browser_channel = os.getenv("CHEESEBUTTON_BROWSER_CHANNEL")
+    launch_options = {
+        "headless": config.headless,
+        "slow_mo": config.slow_mo,
+    }
+    if browser_channel:
+        launch_options["channel"] = browser_channel
+    return playwright.chromium.launch(**launch_options)
+
+
 def wait_for_network_quiet(page: Page, timeout_ms: int = 5_000) -> None:
     try:
         page.wait_for_load_state("networkidle", timeout=timeout_ms)
@@ -346,9 +357,22 @@ def save_download(download: Download, title: str, download_dir: Path) -> Path:
     download_dir.mkdir(parents=True, exist_ok=True)
     suggested = download.suggested_filename or f"{clean_filename(title)}.xlsx"
     suffix = Path(suggested).suffix or ".xlsx"
-    target = download_dir / f"{clean_filename(title)}{suffix}"
+    target = unique_download_path(download_dir, clean_filename(title), suffix)
     download.save_as(str(target))
     return target
+
+
+def unique_download_path(download_dir: Path, stem: str, suffix: str) -> Path:
+    target = download_dir / f"{stem}{suffix}"
+    if not target.exists():
+        return target
+
+    counter = 1
+    while True:
+        candidate = download_dir / f"{stem} ({counter}){suffix}"
+        if not candidate.exists():
+            return candidate
+        counter += 1
 
 
 def close_detail(page: Page) -> None:
@@ -395,7 +419,7 @@ def list_surveys_for_gui(config: AgentConfig, progress: ProgressCallback | None 
     progress("브라우저를 실행합니다.")
 
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=config.headless, slow_mo=config.slow_mo)
+        browser = launch_browser(playwright, config)
         context = make_context(browser, config)
         page = context.new_page()
         page.set_default_timeout(config.timeout_ms)
@@ -423,7 +447,7 @@ def download_surveys_for_gui(
     saved_paths: list[Path] = []
 
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=config.headless, slow_mo=config.slow_mo)
+        browser = launch_browser(playwright, config)
         context = make_context(browser, config)
         page = context.new_page()
         page.set_default_timeout(config.timeout_ms)
@@ -452,7 +476,7 @@ def download_surveys_for_gui(
 
 def run_agent(config: AgentConfig, centers: list[str], *, list_surveys: bool = False, limit: int | None = None) -> None:
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=config.headless, slow_mo=config.slow_mo)
+        browser = launch_browser(playwright, config)
         context = make_context(browser, config)
         page = context.new_page()
         page.set_default_timeout(config.timeout_ms)

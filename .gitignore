@@ -1,4 +1,10 @@
 .cheesebutton_state.json
+.cheesebutton_gui.lock
 downloads/
 __pycache__/
 *.pyc
+.tmp_unique_test/
+build/
+dist/
+CheeseButtonDownloader.zip
+CheeseButtonDownloader_Lite.zip

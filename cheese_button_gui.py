@@ -1,14 +1,27 @@
+import ctypes
+import os
 import queue
+import sys
 import tempfile
 import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+if getattr(sys, "frozen", False):
+    bundled_browsers = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent)) / "ms-playwright"
+    if bundled_browsers.exists():
+        os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(bundled_browsers))
+    else:
+        os.environ.setdefault("CHEESEBUTTON_BROWSER_CHANNEL", "chrome")
+
 from playwright.sync_api import TimeoutError, sync_playwright
 
 import cheese_button_agent as agent
 
+
+LOCK_FILE = Path(".cheesebutton_gui.lock")
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
 REGION_GROUPS = [
     ("1권역", ["서울", "인천", "고양", "포천", "용인", "화성", "평택"]),
@@ -34,8 +47,13 @@ class CheeseButtonWizard(tk.Tk):
         self.select_all_surveys = tk.BooleanVar(value=True)
         self.group_vars: dict[str, tk.BooleanVar] = {}
 
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._build_environment_step()
         self.after(100, self._drain_log_queue)
+
+    def _on_close(self) -> None:
+        release_single_instance_lock()
+        self.destroy()
 
     def _set_busy(self, busy: bool) -> None:
         state = "disabled" if busy else "normal"
@@ -48,13 +66,10 @@ class CheeseButtonWizard(tk.Tk):
         ttk.Label(self, text="치즈버튼 QR 방명록 다운로더", font=("맑은 고딕", 18, "bold")).pack(anchor="w", padx=24, pady=(24, 4))
         ttk.Label(self, text="1단계. 실행 환경 확인", font=("맑은 고딕", 12, "bold")).pack(anchor="w", padx=24, pady=(0, 16))
 
-        frame = ttk.Frame(self)
-        frame.pack(fill="x", padx=24)
-
-        ttk.Label(frame, text="저장 경로").grid(row=0, column=0, sticky="w")
-        ttk.Entry(frame, textvariable=self.download_dir).grid(row=1, column=0, sticky="ew", pady=(4, 0))
-        ttk.Button(frame, text="폴더 선택", command=self._choose_download_dir).grid(row=1, column=1, padx=(8, 0), pady=(4, 0))
-        frame.columnconfigure(0, weight=1)
+        ttk.Label(
+            self,
+            text="이 PC에서 브라우저 실행과 치즈버튼 접속이 가능한지 확인합니다.",
+        ).pack(anchor="w", padx=24)
 
         button_frame = ttk.Frame(self)
         button_frame.pack(fill="x", padx=24, pady=16)
@@ -123,34 +138,28 @@ class CheeseButtonWizard(tk.Tk):
             command=self._toggle_all_surveys,
         ).pack(anchor="w")
 
-        list_frame = ttk.Frame(self)
-        list_frame.pack(fill="both", expand=True, padx=24, pady=12)
-
-        canvas = tk.Canvas(list_frame, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=canvas.yview)
-        inner = ttk.Frame(canvas)
-        inner.bind("<Configure>", lambda event: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=inner, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
-
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-        self._bind_mousewheel(canvas, inner)
+        groups_frame = ttk.Frame(self)
+        groups_frame.pack(fill="both", expand=True, padx=24, pady=12)
+        for column in range(len(REGION_GROUPS)):
+            groups_frame.columnconfigure(column, weight=1, uniform="region")
 
         self.selected_surveys = {}
         self.group_vars = {}
         titles_by_region = self._titles_by_region()
         rendered_titles: set[str] = set()
 
-        for group_name, regions in REGION_GROUPS:
+        for column, (group_name, regions) in enumerate(REGION_GROUPS):
+            group_frame = ttk.Frame(groups_frame, padding=(0, 0, 16, 0))
+            group_frame.grid(row=0, column=column, sticky="nsew")
+
             group_var = tk.BooleanVar(value=True)
             self.group_vars[group_name] = group_var
             ttk.Checkbutton(
-                inner,
+                group_frame,
                 text=group_name,
                 variable=group_var,
                 command=lambda name=group_name: self._toggle_group_surveys(name),
-            ).pack(anchor="w", pady=(8, 2))
+            ).pack(anchor="w", pady=(0, 8))
 
             for region in regions:
                 title = titles_by_region.get(region)
@@ -160,29 +169,57 @@ class CheeseButtonWizard(tk.Tk):
                 var = tk.BooleanVar(value=True)
                 self.selected_surveys[title] = var
                 ttk.Checkbutton(
-                    inner,
-                    text=f"  {region}",
+                    group_frame,
+                    text=region,
                     variable=var,
                     command=self._sync_group_checkboxes,
-                ).pack(anchor="w", padx=18, pady=2)
+                ).pack(anchor="w", pady=3)
 
         remaining_titles = [title for title in self.survey_titles if title not in rendered_titles]
         if remaining_titles:
-            ttk.Label(inner, text="기타").pack(anchor="w", pady=(8, 2))
+            extra_frame = ttk.LabelFrame(self, text="기타")
+            extra_frame.pack(fill="x", padx=24, pady=(0, 12))
             for title in remaining_titles:
                 var = tk.BooleanVar(value=True)
                 self.selected_surveys[title] = var
                 ttk.Checkbutton(
-                    inner,
-                    text=f"  {title}",
+                    extra_frame,
+                    text=title,
                     variable=var,
                     command=self._sync_group_checkboxes,
-                ).pack(anchor="w", padx=18, pady=2)
+                ).pack(anchor="w", padx=8, pady=2)
 
         button_frame = ttk.Frame(self)
         button_frame.pack(fill="x", padx=24, pady=(0, 24))
         ttk.Button(button_frame, text="이전", command=self._build_load_surveys_step).pack(side="left")
-        ttk.Button(button_frame, text="다음 단계 준비 중").pack(side="right")
+        ttk.Button(button_frame, text="다음", command=self._go_to_save_path_step).pack(side="right")
+
+    def _build_save_path_step(self) -> None:
+        self._clear()
+
+        selected_titles = self._selected_survey_titles()
+        ttk.Label(self, text="치즈버튼 QR 방명록 다운로더", font=("맑은 고딕", 18, "bold")).pack(anchor="w", padx=24, pady=(24, 4))
+        ttk.Label(self, text="5단계. 저장 위치 선택", font=("맑은 고딕", 12, "bold")).pack(anchor="w", padx=24, pady=(0, 16))
+        ttk.Label(self, text=f"선택한 설문 {len(selected_titles)}개를 저장할 폴더를 선택해주세요.").pack(anchor="w", padx=24)
+
+        path_frame = ttk.Frame(self)
+        path_frame.pack(fill="x", padx=24, pady=(16, 8))
+        ttk.Label(path_frame, text="저장 경로").grid(row=0, column=0, sticky="w")
+        ttk.Entry(path_frame, textvariable=self.download_dir).grid(row=1, column=0, sticky="ew", pady=(4, 0))
+        ttk.Button(path_frame, text="폴더 선택", command=self._choose_download_dir).grid(row=1, column=1, padx=(8, 0), pady=(4, 0))
+        path_frame.columnconfigure(0, weight=1)
+
+        summary = tk.Text(self, height=10, wrap="word", state="normal")
+        summary.pack(fill="both", expand=True, padx=24, pady=8)
+        summary.insert("end", "선택된 설문\n")
+        for index, title in enumerate(selected_titles, start=1):
+            summary.insert("end", f"{index:02d}. {title}\n")
+        summary.configure(state="disabled")
+
+        button_frame = ttk.Frame(self)
+        button_frame.pack(fill="x", padx=24, pady=(8, 24))
+        ttk.Button(button_frame, text="이전", command=self._build_select_surveys_step).pack(side="left")
+        ttk.Button(button_frame, text="다운로드하기", command=self._confirm_and_start_download).pack(side="right")
 
     def _clear(self) -> None:
         for widget in self.winfo_children():
@@ -207,6 +244,48 @@ class CheeseButtonWizard(tk.Tk):
         selected = filedialog.askdirectory(initialdir=self.download_dir.get() or str(Path.home()))
         if selected:
             self.download_dir.set(selected)
+
+    def _go_to_save_path_step(self) -> None:
+        if not self._selected_survey_titles():
+            messagebox.showwarning("지역 선택", "다운로드할 지역을 하나 이상 선택해주세요.")
+            return
+        self._build_save_path_step()
+
+    def _confirm_and_start_download(self) -> None:
+        try:
+            self._check_download_dir()
+        except Exception as exc:
+            messagebox.showerror("저장 경로 확인 실패", f"선택한 폴더에 저장할 수 없습니다.\n\n{exc}")
+            return
+
+        selected_titles = self._selected_survey_titles()
+        confirmed = messagebox.askyesno(
+            "다운로드 확인",
+            f"선택한 폴더에 설문 {len(selected_titles)}개를 다운로드할까요?\n\n{self.download_dir.get()}",
+        )
+        if not confirmed:
+            return
+
+        self._build_download_step()
+        self._start_download()
+
+    def _build_download_step(self) -> None:
+        self._clear()
+
+        selected_titles = self._selected_survey_titles()
+        ttk.Label(self, text="치즈버튼 QR 방명록 다운로더", font=("맑은 고딕", 18, "bold")).pack(anchor="w", padx=24, pady=(24, 4))
+        ttk.Label(self, text="6단계. 다운로드", font=("맑은 고딕", 12, "bold")).pack(anchor="w", padx=24, pady=(0, 16))
+        ttk.Label(self, text=f"저장 경로: {self.download_dir.get()}").pack(anchor="w", padx=24)
+        ttk.Label(self, text=f"선택한 설문 {len(selected_titles)}개를 다운로드합니다.").pack(anchor="w", padx=24, pady=(8, 0))
+
+        button_frame = ttk.Frame(self)
+        button_frame.pack(fill="x", padx=24, pady=16)
+        self.download_button = ttk.Button(button_frame, text="다운로드 중...", state="disabled")
+        self.download_button.pack(side="left")
+        self.active_button = self.download_button
+
+        self.log_text = tk.Text(self, height=16, wrap="word", state="disabled")
+        self.log_text.pack(fill="both", expand=True, padx=24, pady=(0, 24))
 
     def _start_environment_check(self) -> None:
         self._set_busy(True)
@@ -236,15 +315,21 @@ class CheeseButtonWizard(tk.Tk):
         worker = threading.Thread(target=self._run_load_surveys, daemon=True)
         worker.start()
 
+    def _start_download(self) -> None:
+        self._set_busy(True)
+        worker = threading.Thread(target=self._run_download, daemon=True)
+        worker.start()
+
     def _run_environment_check(self) -> None:
         try:
-            self._log("저장 경로 쓰기 권한을 확인합니다.")
-            self._check_download_dir()
-            self._log("저장 경로 확인 완료")
+            self._log("임시 저장 공간 쓰기 권한을 확인합니다.")
+            self._check_temp_write_access()
+            self._log("임시 저장 공간 확인 완료")
 
             self._log("포함된 Chromium 브라우저 실행을 확인합니다.")
             with sync_playwright() as playwright:
-                browser = playwright.chromium.launch(headless=True)
+                config = agent.make_default_config(Path(self.download_dir.get()), headless=True)
+                browser = agent.launch_browser(playwright, config)
                 page = browser.new_page()
                 page.set_default_timeout(15_000)
                 page.set_content("<h1>ok</h1>")
@@ -275,11 +360,16 @@ class CheeseButtonWizard(tk.Tk):
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=download_dir, delete=True) as handle:
             handle.write("ok")
 
+    def _check_temp_write_access(self) -> None:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=True) as handle:
+            handle.write("ok")
+
     def _run_login_check(self, email: str, password: str) -> None:
         try:
             self._log("치즈버튼 로그인 페이지를 엽니다.")
             with sync_playwright() as playwright:
-                browser = playwright.chromium.launch(headless=True)
+                config = agent.make_default_config(Path(self.download_dir.get()), headless=True)
+                browser = agent.launch_browser(playwright, config)
                 context = browser.new_context(
                     accept_downloads=True,
                     viewport={"width": 1600, "height": 1000},
@@ -365,6 +455,18 @@ class CheeseButtonWizard(tk.Tk):
         finally:
             self.log_queue.put(("done", ""))
 
+    def _run_download(self) -> None:
+        try:
+            selected_titles = self._selected_survey_titles()
+            config = agent.make_default_config(Path(self.download_dir.get()), headless=True)
+            self._log("다운로드를 시작합니다.")
+            saved_paths = agent.download_surveys_for_gui(config, selected_titles, self._log)
+            self._log(f"다운로드 완료: {len(saved_paths)}개 파일 저장", "download_success")
+        except Exception as exc:
+            self._log(f"다운로드 실패: {self._friendly_download_error(exc)}", "download_error")
+        finally:
+            self.log_queue.put(("done", ""))
+
     def _toggle_all_surveys(self) -> None:
         selected = self.select_all_surveys.get()
         for var in self.selected_surveys.values():
@@ -406,6 +508,10 @@ class CheeseButtonWizard(tk.Tk):
                         pairs[region] = title
         return pairs
 
+    def _selected_survey_titles(self) -> list[str]:
+        selected = {title for title, var in self.selected_surveys.items() if var.get()}
+        return [title for title in self.survey_titles if title in selected]
+
     def _friendly_environment_error(self, exc: Exception) -> str:
         message = str(exc)
         if "ERR_NAME_NOT_RESOLVED" in message or "ERR_CONNECTION" in message:
@@ -444,6 +550,18 @@ class CheeseButtonWizard(tk.Tk):
             return "치즈버튼에 접속할 수 없습니다. 인터넷 또는 회사 보안망을 확인해주세요."
         return "알 수 없는 오류가 발생했습니다. 로그를 관리자에게 전달해주세요."
 
+    def _friendly_download_error(self, exc: Exception) -> str:
+        message = str(exc)
+        if "signin" in message:
+            return "로그인 세션이 만료되었습니다. 로그인 단계부터 다시 진행해주세요."
+        if "Timeout" in message:
+            return "다운로드 시간이 초과되었습니다. 잠시 후 다시 시도해주세요."
+        if "ERR_NAME_NOT_RESOLVED" in message or "ERR_CONNECTION" in message:
+            return "치즈버튼에 접속할 수 없습니다. 인터넷 또는 회사 보안망을 확인해주세요."
+        if "Permission" in message or "Access is denied" in message:
+            return "선택한 저장 폴더에 파일을 저장할 권한이 없습니다."
+        return "알 수 없는 오류가 발생했습니다. 로그를 관리자에게 전달해주세요."
+
     def _log(self, message: str, level: str = "info") -> None:
         self.log_queue.put((level, message))
 
@@ -472,19 +590,72 @@ class CheeseButtonWizard(tk.Tk):
                     self.after(700, self._build_load_surveys_step)
                 elif level == "surveys_success":
                     self.after(700, self._build_select_surveys_step)
+                elif level == "download_success":
+                    messagebox.showinfo("다운로드 완료", message)
                 elif level == "env_error":
                     messagebox.showerror("환경 확인 실패", message)
                 elif level == "login_error":
                     messagebox.showerror("로그인 실패", message)
                 elif level == "surveys_error":
                     messagebox.showerror("설문 불러오기 실패", message)
+                elif level == "download_error":
+                    messagebox.showerror("다운로드 실패", message)
         except queue.Empty:
             pass
         self.after(100, self._drain_log_queue)
 
+
+def acquire_single_instance_lock() -> bool:
+    if LOCK_FILE.exists():
+        try:
+            existing_pid = int(LOCK_FILE.read_text(encoding="utf-8").strip())
+        except ValueError:
+            existing_pid = 0
+
+        if existing_pid and is_process_running(existing_pid):
+            return False
+
+        try:
+            LOCK_FILE.unlink()
+        except OSError:
+            return False
+
+    LOCK_FILE.write_text(str(os.getpid()), encoding="utf-8")
+    return True
+
+
+def release_single_instance_lock() -> None:
+    try:
+        if LOCK_FILE.exists() and LOCK_FILE.read_text(encoding="utf-8").strip() == str(os.getpid()):
+            LOCK_FILE.unlink()
+    except OSError:
+        pass
+
+
+def is_process_running(pid: int) -> bool:
+    if pid <= 0:
+        return False
+
+    handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        return False
+    ctypes.windll.kernel32.CloseHandle(handle)
+    return True
+
+
 def main() -> None:
+    if not acquire_single_instance_lock():
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showwarning("이미 실행 중", "치즈버튼 다운로더가 이미 실행 중입니다.")
+        root.destroy()
+        return
+
     app = CheeseButtonWizard()
-    app.mainloop()
+    try:
+        app.mainloop()
+    finally:
+        release_single_instance_lock()
 
 
 if __name__ == "__main__":
