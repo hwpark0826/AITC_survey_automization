@@ -1,23 +1,31 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 from pathlib import Path
+import sys
 
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 
 project_dir = Path(SPECPATH)
+python_dir = Path(sys.executable).parent
 
 datas = collect_data_files("playwright")
-hiddenimports = collect_submodules("playwright")
+datas += [(str(python_dir / "tcl"), "tcl")]
+binaries = [
+    (str(python_dir / "DLLs" / "_tkinter.pyd"), "."),
+    (str(python_dir / "DLLs" / "tcl86t.dll"), "."),
+    (str(python_dir / "DLLs" / "tk86t.dll"), "."),
+]
+hiddenimports = collect_submodules("playwright") + ["tkinter"]
 
 
 a = Analysis(
     ["cheese_button_gui.py"],
     pathex=[str(project_dir)],
-    binaries=[],
+    binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
-    hookspath=[],
+    hookspath=[str(project_dir / "pyinstaller_hooks")],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[],

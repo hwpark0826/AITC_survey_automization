@@ -555,7 +555,7 @@ class CheeseButtonWizard(tk.Tk):
         if "signin" in message:
             return "로그인 세션이 만료되었습니다. 로그인 단계부터 다시 진행해주세요."
         if "Timeout" in message:
-            return "다운로드 시간이 초과되었습니다. 잠시 후 다시 시도해주세요."
+            return "다운로드 대기 시간이 초과되었습니다. 회사 보안망 환경에서는 지연될 수 있어 잠시 후 다시 시도해주세요."
         if "ERR_NAME_NOT_RESOLVED" in message or "ERR_CONNECTION" in message:
             return "치즈버튼에 접속할 수 없습니다. 인터넷 또는 회사 보안망을 확인해주세요."
         if "Permission" in message or "Access is denied" in message:

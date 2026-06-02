@@ -337,7 +337,8 @@ def download_excel(page: Page, title: str, download_dir: Path) -> Path:
     page.get_by_text(SELECT_ALL_ITEMS_TEXT).wait_for(state="visible", timeout=10_000)
     select_all_excel_items(page)
 
-    with page.expect_download(timeout=30_000) as download_info:
+    # Company-managed networks and endpoint security can delay download events.
+    with page.expect_download(timeout=120_000) as download_info:
         page.get_by_text(DOWNLOAD_TEXT, exact=True).last.click()
     download = download_info.value
     return save_download(download, title, download_dir)
